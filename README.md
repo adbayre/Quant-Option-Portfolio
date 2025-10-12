@@ -15,12 +15,13 @@ This repository hosts a collaborative project to build a pricing and hedging pla
 
 Clone the repository:
 
-git clone https://github.com/adbayre/Quant-Option-Portfolio.git
-cd Quant-Option-Portfolio
+`git clone https://github.com/adbayre/Quant-Option-Portfolio.git`
+
+`cd Quant-Option-Portfolio`
 
 Install dependencies:
 
-pip install -r requirements.txt
+`pip install -r requirements.txt`
 
 ## Project Structure
 
