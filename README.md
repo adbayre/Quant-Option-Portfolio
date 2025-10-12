@@ -15,3 +15,34 @@ This repository hosts a collaborative project to build a pricing and hedging pla
 
 Clone the repository:
 
+git clone https://github.com/adbayre/Quant-Option-Portfolio.git
+cd Quant-Option-Portfolio
+
+Install dependencies:
+
+pip install -r requirements.txt
+
+## Project Structure
+
+- /crr_engine/: Core CRR logic
+- /greeks/: Greeks calculation
+- /convergence/: Black-Scholes analysis
+- /frontend/: Web interface code
+- /tests/: Unit & integration tests
+- /docs/: Technical documentation
+
+## Contributors
+
+- Bayre Adrien 
+- Liu Jack
+- Hanna Gerguis Alexis
+- Milcent Marcellin
+- Jouonang Kapnang Sinthia Vanelle
+
+## License
+
+MIT License
+
+---
+
+*This README will be updated as the project progresses, with new features, usage examples, and more detailed documentation.*
