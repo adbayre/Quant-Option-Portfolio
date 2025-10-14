@@ -1,4 +1,4 @@
-# Option Pricing Platform
+# IN PROGRESS -- Option Pricing Platform
 
 This repository hosts a collaborative project to build a pricing and hedging platform for financial derivatives based on different proven models. The platform enables users to price European call and put options and analyze dynamic hedging strategies.
 
