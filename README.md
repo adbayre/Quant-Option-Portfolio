@@ -39,7 +39,7 @@ Install dependencies:
 - Hanna Gerguis Alexis
 - Milcent Marcellin
 - Jouonang Kapnang Sinthia Vanelle
-
+- Lambert Vincent Marc (associate professor)
 ## License
 
 MIT License
