@@ -201,45 +201,84 @@ def fetch_spy_data(backtest_date=None, lookback_days=252):
         spy = yf.Ticker("SPY")
         
         if backtest_date:
-            # For backtesting: fetch data up to the specified date
-            end_date = backtest_date
-            start_date = end_date - timedelta(days=lookback_days * 2)  # Extra buffer for weekends
-            hist = spy.history(start=start_date, end=end_date)
+            # For backtesting: fetch data from lookback period to TODAY
+            # This shows how the market evolved AFTER the backtest date
+            start_date = backtest_date - timedelta(days=lookback_days * 2)  # Extra buffer for weekends
+            end_date = datetime.now()  # Fetch all the way to present
+            hist_full = spy.history(start=start_date, end=end_date)
+            
+            # Convert backtest_date to timezone-aware if hist_full index is timezone-aware
+            if hist_full.index.tz is not None:
+                if backtest_date.tzinfo is None:
+                    backtest_date = backtest_date.replace(tzinfo=hist_full.index.tz)
+            
+            # Get historical data UP TO backtest date for volatility calculation
+            hist_backtest = hist_full[hist_full.index <= backtest_date]
+            
+            if len(hist_backtest) == 0:
+                return None, None, None, None
+            
+            # Get price at the backtest date
+            current_price = hist_backtest['Close'].iloc[-1]
+            
+            # Calculate volatility from returns UP TO backtest date
+            returns = np.log(hist_backtest['Close'] / hist_backtest['Close'].shift(1)).dropna()
+            volatility = returns.std() * np.sqrt(252)  # Annualized
+            
+            return current_price, volatility, hist_full, backtest_date
         else:
             # Current data: fetch last year
             hist = spy.history(period="1y")
-        
-        if len(hist) == 0:
-            return None, None, None
-        
-        # Get price at the specified date (or most recent)
-        current_price = hist['Close'].iloc[-1]
-        
-        # Calculate volatility from returns
-        returns = np.log(hist['Close'] / hist['Close'].shift(1)).dropna()
-        volatility = returns.std() * np.sqrt(252)  # Annualized
-        
-        return current_price, volatility, hist
+            
+            if len(hist) == 0:
+                return None, None, None, None
+            
+            current_price = hist['Close'].iloc[-1]
+            returns = np.log(hist['Close'] / hist['Close'].shift(1)).dropna()
+            volatility = returns.std() * np.sqrt(252)  # Annualized
+            
+            return current_price, volatility, hist, None
     except Exception as e:
         st.error(f"Error fetching SPY data: {e}")
-        return None, None, None
+        return None, None, None, None
 
 
 # --- Plot SPY Price History ---
-def plot_spy_history(hist, selected_date=None):
-    """Plot SPY price history with optional date marker"""
+def plot_spy_history(hist, selected_date=None, lookback_date=None):
+    """Plot SPY price history with optional date markers"""
     fig, ax = plt.subplots(figsize=(14, 5))
     fig.patch.set_facecolor('#0f172b')
     ax.set_facecolor('#0f172b')
     
-    ax.plot(hist.index, hist['Close'], color='#60a5fa', linewidth=2, label='SPY Close Price')
+    # Plot full history
+    ax.plot(hist.index, hist['Close'], color='#60a5fa', linewidth=1, label='S&P 500 Close Price')
+    # Convert dates to timezone-aware if needed
+    if hist.index.tz is not None:
+        if selected_date and selected_date.tzinfo is None:
+            selected_date = selected_date.replace(tzinfo=hist.index.tz)
+        if lookback_date and lookback_date.tzinfo is None:
+            lookback_date = lookback_date.replace(tzinfo=hist.index.tz)
+    # Mark the lookback period start (for volatility calculation)
+    if lookback_date and selected_date:
+        # Shade the lookback period used for volatility
+        ax.axvspan(lookback_date, selected_date, alpha=0.2, color='#34d399', label='Volatility Lookback Period')
     
+    # Mark the selected backtest date
     if selected_date:
-        ax.axvline(x=selected_date, color='#f87171', linestyle='--', linewidth=2, label=f'Selected Date')
+        ax.axvline(x=selected_date, color='#f87171', linestyle='--', linewidth=1.5, 
+                   label=f'Backtest Date: {selected_date.date()}')
+        
+        # Add annotation
+        price_at_date = hist[hist.index <= selected_date]['Close'].iloc[-1]
+        ax.annotate(f'${price_at_date:.2f}', 
+                   xy=(selected_date, price_at_date),
+                   xytext=(10, 10), textcoords='offset points',
+                   color='#f87171', fontweight='bold', fontsize=10,
+                   bbox=dict(boxstyle='round,pad=0.5', facecolor='#1d293d', edgecolor='#f87171'))
     
     ax.set_xlabel('Date', fontsize=12, color='#e2e8f0', fontweight='bold')
     ax.set_ylabel('Price ($)', fontsize=12, color='#e2e8f0', fontweight='bold')
-    ax.set_title('SPY Historical Price', fontsize=14, fontweight='bold', color='#e2e8f0')
+    # ax.set_title('S&P 500 Price Evolution (Lookback Period → Present)', fontsize=14, fontweight='bold', color='#e2e8f0')
     ax.tick_params(colors='#e2e8f0', labelsize=10)
     ax.spines['bottom'].set_color('#314158')
     ax.spines['top'].set_color('#314158')
@@ -258,7 +297,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-st.title("🌳 Cox-Ross-Rubinstein Option Pricer")
+st.title("Cox-Ross-Rubinstein & Black Scholes Option Pricer")
 st.caption("Bayre Adrien | Liu Jack | Hanna Gerguis Alexis | Milcent Marcellin | Jouonang Kapnang Sinthia Vanelle")
 
 # --- Layout: Left (Inputs) | Right (Outputs) ---
@@ -266,37 +305,37 @@ left_col, right_col = st.columns([1, 2])
 
 # ========== LEFT COLUMN: MODEL INPUTS ==========
 with left_col:
-    st.header("📊 Model Parameters")
+    st.header("Model Parameters")
     
     # Data Source Selection
     st.subheader("Data Source")
-    data_source = st.radio("Choose data source:", ["Manual Input", "Fetch SPY Data", "SPY Backtesting"], horizontal=False)
+    data_source = st.radio("Choose data source:", ["Manual Input", "Current S&P500 Data", "S&P500 Backtesting"], horizontal=False)
     
-    if data_source == "Fetch SPY Data":
-        if st.button("📈 Fetch Current SPY Data", use_container_width=True):
-            with st.spinner("Fetching current SPY data..."):
-                spy_price, spy_vol, spy_hist = fetch_spy_data()
+    if data_source == "Current S&P500 Data":
+        if st.button("Load Current S&P500 Data", use_container_width=True):
+            with st.spinner("Fetching current S&P500 data..."):
+                spy_price, spy_vol, spy_hist, _ = fetch_spy_data()
                 if spy_price:
                     st.session_state.spy_price = spy_price
                     st.session_state.spy_vol = spy_vol
                     st.session_state.spy_hist = spy_hist
                     st.session_state.backtest_date = None
-                    st.success(f"✅ Fetched! Price: ${spy_price:.2f} | Vol: {spy_vol*100:.2f}%")
+                    st.success(f"Fetched! Price: ${spy_price:.2f} | Volatility: {spy_vol*100:.2f}%")
                 else:
-                    st.error("❌ Failed to fetch SPY data.")
+                    st.error("Failed to fetch S&P500 data.")
         
         S0 = st.session_state.get('spy_price', 500.0)
         sigma_pct = st.session_state.get('spy_vol', 0.15) * 100
-        st.info(f"📊 Using Current SPY: S₀ = ${S0:.2f}, σ = {sigma_pct:.1f}%")
+        st.info(f"Using Current S&P500: S₀ = ${S0:.2f}, σ = {sigma_pct:.1f}%")
         sigma = sigma_pct / 100
         
-    elif data_source == "SPY Backtesting":
-        st.subheader("🕒 Backtesting Date")
+    elif data_source == "S&P500 Backtesting":
+        st.subheader("Backtesting Date")
         
         # Date picker for backtesting
         min_date = datetime(2010, 1, 1)
         max_date = datetime.now() - timedelta(days=1)
-        default_date = datetime(2020, 1, 1)
+        default_date = datetime(2022, 1, 1)
         
         selected_date = st.date_input(
             "Select historical date:",
@@ -313,27 +352,27 @@ with left_col:
             help="Number of trading days to calculate historical volatility"
         )
         
-        if st.button("📅 Load SPY Data for Selected Date", use_container_width=True):
-            with st.spinner(f"Fetching SPY data for {selected_date}..."):
+        if st.button("Load S&P500 Data for Selected Date", use_container_width=True):
+            with st.spinner(f"Fetching S&P500 data for {selected_date}..."):
                 backtest_datetime = datetime.combine(selected_date, datetime.min.time())
-                spy_price, spy_vol, spy_hist = fetch_spy_data(backtest_datetime, lookback_period)
+                spy_price, spy_vol, spy_hist, backtest_dt = fetch_spy_data(backtest_datetime, lookback_period)
                 if spy_price:
                     st.session_state.spy_price = spy_price
                     st.session_state.spy_vol = spy_vol
                     st.session_state.spy_hist = spy_hist
                     st.session_state.backtest_date = backtest_datetime
-                    st.success(f"✅ Loaded! Price on {selected_date}: ${spy_price:.2f} | Vol: {spy_vol*100:.2f}%")
+                    st.success(f"Loaded! Price on {selected_date}: ${spy_price:.2f} | Vol: {spy_vol*100:.2f}%")
                 else:
-                    st.error("❌ Failed to fetch data for selected date.")
+                    st.error("Failed to fetch data for selected date.")
         
         S0 = st.session_state.get('spy_price', 500.0)
         sigma_pct = st.session_state.get('spy_vol', 0.15) * 100
         backtest_date = st.session_state.get('backtest_date', None)
         
         if backtest_date:
-            st.info(f"📅 Backtesting {backtest_date.date()}: S₀ = ${S0:.2f}, σ = {sigma_pct:.1f}%")
+            st.info(f"Backtesting {backtest_date.date()}: S₀ = ${S0:.2f}, σ = {sigma_pct:.1f}%")
         else:
-            st.warning("⚠️ Please load data for the selected date")
+            st.warning("Please load data for the selected date")
         
         sigma = sigma_pct / 100
         
@@ -361,18 +400,18 @@ with left_col:
     st.divider()
     
     # Convergence Slider
-    st.subheader("🎯 Convergence Analysis")
+    st.subheader("Convergence Analysis")
     N = st.slider(
         "Number of Steps (N)",
         min_value=2,
-        max_value=200,
-        value=50,
+        max_value=50,
+        value=10,
         step=1,
         help="Adjust to see CRR price converge to Black-Scholes"
     )
     
     st.divider()
-    compute_btn = st.button("🚀 Compute Option Price", use_container_width=True, type="primary")
+    compute_btn = st.button("Compute Option Price", use_container_width=True, type="primary")
 
 # --- Compute Pricing ---
 if compute_btn or 'crr_price' not in st.session_state:
@@ -395,20 +434,20 @@ st.divider()
 
 intrinsic = max(S0 - K, 0) if option_type == "Call" else max(K - S0, 0)
 moneyness = (
-    "🎯 ATM" if abs(S0 - K) < 1
-    else "💰 ITM" if (S0 > K and option_type == "Call") or (S0 < K and option_type == "Put")
-    else "📉 OTM"
+    "ATM" if abs(S0 - K) < 1
+    else "ITM" if (S0 > K and option_type == "Call") or (S0 < K and option_type == "Put")
+    else "OTM"
 )
 
 cols = st.columns(5)
-cols[0].metric("💵 CRR Price", f"${crr_price:.4f}")
+cols[0].metric("CRR Price", f"${crr_price:.4f}")
 if bs_price:
-    cols[1].metric("📊 Black-Scholes", f"${bs_price:.4f}")
-    cols[2].metric("📉 Difference", f"${abs(crr_price - bs_price):.4f}")
+    cols[1].metric("Black-Scholes", f"${bs_price:.4f}")
+    cols[2].metric("Difference", f"${abs(crr_price - bs_price):.4f}")
 else:
-    cols[1].metric("📊 Black-Scholes", "N/A (American)")
-    cols[2].metric("📉 Difference", "N/A")
-cols[3].metric("💎 Intrinsic Value", f"${intrinsic:.4f}")
+    cols[1].metric("Black-Scholes", "N/A (American)")
+    cols[2].metric("Difference", "N/A")
+cols[3].metric("Intrinsic Value", f"${intrinsic:.4f}")
 cols[4].metric("Moneyness", moneyness)
 
 st.divider()
@@ -418,7 +457,7 @@ with right_col:
     
     # --- SPY Price History (if available) ---
     if 'spy_hist' in st.session_state and st.session_state.spy_hist is not None:
-        st.header("📈 SPY Price History")
+        st.header("S&P 500 Price History")
         spy_hist = st.session_state.spy_hist
         backtest_date = st.session_state.get('backtest_date', None)
         
@@ -429,7 +468,7 @@ with right_col:
         st.divider()
     
     # --- Option Value Tree ---
-    st.header("🌳 Option Value Tree")
+    st.header("Option Value Tree")
     if pricer.option_tree is not None:
         fig_option = pricer.plot_tree(pricer.option_tree, f"{exercise_type} {option_type} - Option Value Tree", "option")
         st.pyplot(fig_option)
@@ -438,7 +477,7 @@ with right_col:
     st.divider()
     
     # --- Convergence to Black-Scholes ---
-    st.header("🔄 CRR Convergence to Black-Scholes")
+    st.header("CRR Convergence to Black-Scholes")
     
     if exercise_type == "European":
         steps_range = list(range(2, min(201, N + 50), 2))
@@ -472,7 +511,7 @@ with right_col:
         st.pyplot(fig_conv)
         plt.close()
     else:
-        st.info("Convergence analysis only available for European options")
+        st.info("ℹConvergence analysis only available for European options")
     
     st.divider()
     
@@ -488,4 +527,4 @@ with right_col:
 
 # --- Footer ---
 st.divider()
-st.markdown('<p style="text-align:center; color:#8A94B0; margin-top:20px;">ESILV Paris | CRR & Black Scholes Visualizer v0.1 © 2025</p>', unsafe_allow_html=True)
+st.markdown('<p style="text-align:center; color:#8A94B0; margin-top:20px;">ESILV Paris | CRR & Black Scholes Models Visualizer v0.1 © 2025</p>', unsafe_allow_html=True)
