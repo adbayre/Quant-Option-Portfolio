@@ -1,200 +1,491 @@
-﻿import streamlit as st
+﻿# -*- coding: utf-8 -*-
+import streamlit as st
 import matplotlib.pyplot as plt
-from crr_pricer import CRROptionPricer
+import numpy as np
+from scipy.stats import norm
+import yfinance as yf
+from datetime import datetime, timedelta
+import pandas as pd
 
-# --- Streamlit Page Config ---
+# --- CRR Option Pricer Class ---
+class CRROptionPricer:
+    """Cox-Ross-Rubinstein Binomial Tree Option Pricer"""
+    
+    def __init__(self, S0, K, T, r, sigma, N, option_type='call', exercise_type='european'):
+        self.S0 = S0
+        self.K = K
+        self.T = T
+        self.r = r
+        self.sigma = sigma
+        self.N = N
+        self.option_type = option_type.lower()
+        self.exercise_type = exercise_type.lower()
+        
+        self.dt = T / N
+        self.u = np.exp(sigma * np.sqrt(self.dt))
+        self.d = 1 / self.u
+        self.q = (np.exp(r * self.dt) - self.d) / (self.u - self.d)
+        self.discount = np.exp(-r * self.dt)
+        
+        self.stock_tree = None
+        self.option_tree = None
+
+    def build_stock_tree(self):
+        self.stock_tree = np.zeros((self.N + 1, self.N + 1))
+        for i in range(self.N + 1):
+            for j in range(i + 1):
+                self.stock_tree[j, i] = self.S0 * (self.u ** (i - j)) * (self.d ** j)
+        return self.stock_tree
+    
+    def payoff(self, S):
+        if self.option_type == 'call':
+            return np.maximum(S - self.K, 0)
+        else:
+            return np.maximum(self.K - S, 0)
+    
+    def price(self):
+        if self.stock_tree is None:
+            self.build_stock_tree()
+        
+        self.option_tree = np.zeros((self.N + 1, self.N + 1))
+        self.option_tree[:, self.N] = self.payoff(self.stock_tree[:, self.N])
+        
+        for i in range(self.N - 1, -1, -1):
+            for j in range(i + 1):
+                continuation = self.discount * (
+                    self.q * self.option_tree[j, i + 1] + 
+                    (1 - self.q) * self.option_tree[j + 1, i + 1]
+                )
+                if self.exercise_type == 'american':
+                    exercise = self.payoff(self.stock_tree[j, i])
+                    self.option_tree[j, i] = np.maximum(continuation, exercise)
+                else:
+                    self.option_tree[j, i] = continuation
+        
+        return self.option_tree[0, 0]
+    
+    def plot_tree(self, tree, title, tree_type):
+        fig, ax = plt.subplots(figsize=(14, 9))
+        fig.patch.set_facecolor('#0f172b')
+        ax.set_facecolor('#0f172b')
+        
+        ax.set_xlim(-0.5, self.N + 0.5)
+        ax.set_ylim(-0.5, self.N + 0.5)
+        ax.set_aspect('equal')
+        ax.axis('off')
+        ax.set_title(title, fontsize=18, fontweight='bold', pad=20, color='#e2e8f0')
+        
+        dx = 1.0
+        dy = 1.0
+        
+        # Draw edges
+        for i in range(self.N):
+            for j in range(i + 1):
+                x = i * dx
+                y = (self.N - i) / 2 + j * dy
+                ax.plot([x, i+1], [y, (self.N - i - 1)/2 + j*dy], color='#3b82f6', alpha=0.3, linewidth=1.5)
+                ax.plot([x, i+1], [y, (self.N - i - 1)/2 + (j+1)*dy], color='#ef4444', alpha=0.3, linewidth=1.5)
+        
+        # Draw nodes
+        for i in range(self.N + 1):
+            for j in range(i + 1):
+                x = i * dx
+                y = (self.N - i) / 2 + j * dy
+                value = tree[j, i]
+                
+                if tree_type == 'option' and self.exercise_type == 'american' and i < self.N:
+                    stock_price = self.stock_tree[j, i]
+                    intrinsic = self.payoff(stock_price)
+                    if abs(value - intrinsic) < 1e-6 and intrinsic > 0:
+                        color = '#f87171'
+                    else:
+                        color = '#60a5fa'
+                else:
+                    color = '#34d399' if i == self.N else '#60a5fa'
+                
+                circle = plt.Circle((x, y), 0.15, color=color, ec='#e2e8f0', linewidth=2)
+                ax.add_patch(circle)
+                ax.text(x, y, f'{value:.2f}', ha='center', va='center', 
+                       fontsize=8 if self.N > 8 else 9, fontweight='bold', color='#0f172b')
+        
+        return fig
+    
+    def get_greeks(self, epsilon=0.01):
+        base_price = self.price()
+        
+        # Delta
+        self.S0 += epsilon
+        self.build_stock_tree()
+        price_up = self.price()
+        self.S0 -= 2 * epsilon
+        self.build_stock_tree()
+        price_down = self.price()
+        self.S0 += epsilon
+        delta = (price_up - price_down) / (2 * epsilon)
+        gamma = (price_up - 2 * base_price + price_down) / (epsilon ** 2)
+        
+        # Vega
+        self.sigma += epsilon
+        self.u = np.exp(self.sigma * np.sqrt(self.dt))
+        self.d = 1 / self.u
+        self.q = (np.exp(self.r * self.dt) - self.d) / (self.u - self.d)
+        self.build_stock_tree()
+        price_vega = self.price()
+        self.sigma -= epsilon
+        self.u = np.exp(self.sigma * np.sqrt(self.dt))
+        self.d = 1 / self.u
+        self.q = (np.exp(self.r * self.dt) - self.d) / (self.u - self.d)
+        vega = (price_vega - base_price) / epsilon
+        
+        # Theta
+        self.T -= epsilon
+        self.dt = self.T / self.N
+        self.u = np.exp(self.sigma * np.sqrt(self.dt))
+        self.d = 1 / self.u
+        self.q = (np.exp(self.r * self.dt) - self.d) / (self.u - self.d)
+        self.discount = np.exp(-self.r * self.dt)
+        self.build_stock_tree()
+        price_theta = self.price()
+        self.T += epsilon
+        self.dt = self.T / self.N
+        self.u = np.exp(self.sigma * np.sqrt(self.dt))
+        self.d = 1 / self.u
+        self.q = (np.exp(self.r * self.dt) - self.d) / (self.u - self.d)
+        self.discount = np.exp(-self.r * self.dt)
+        theta = (price_theta - base_price) / epsilon
+        
+        # Rho
+        self.r += epsilon
+        self.q = (np.exp(self.r * self.dt) - self.d) / (self.u - self.d)
+        self.discount = np.exp(-self.r * self.dt)
+        self.build_stock_tree()
+        price_rho = self.price()
+        self.r -= epsilon
+        self.q = (np.exp(self.r * self.dt) - self.d) / (self.u - self.d)
+        self.discount = np.exp(-self.r * self.dt)
+        rho = (price_rho - base_price) / epsilon
+        
+        self.build_stock_tree()
+        self.price()
+        return {'Delta': delta, 'Gamma': gamma, 'Theta': theta, 'Vega': vega, 'Rho': rho}
+
+
+# --- Black-Scholes Formula ---
+def black_scholes_price(S, K, T, r, sigma, option_type='call'):
+    """Calculate Black-Scholes option price"""
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    
+    if option_type == 'call':
+        price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    else:
+        price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+    
+    return price
+
+
+# --- Fetch SPY Historical Data ---
+def fetch_spy_data(backtest_date=None, lookback_days=252):
+    """
+    Fetch SPY data from Yahoo Finance
+    
+    Parameters:
+    -----------
+    backtest_date : datetime or None
+        If provided, fetch data up to this date for backtesting
+        If None, fetch current/recent data
+    lookback_days : int
+        Number of trading days to look back for volatility calculation
+    """
+    try:
+        spy = yf.Ticker("SPY")
+        
+        if backtest_date:
+            # For backtesting: fetch data up to the specified date
+            end_date = backtest_date
+            start_date = end_date - timedelta(days=lookback_days * 2)  # Extra buffer for weekends
+            hist = spy.history(start=start_date, end=end_date)
+        else:
+            # Current data: fetch last year
+            hist = spy.history(period="1y")
+        
+        if len(hist) == 0:
+            return None, None, None
+        
+        # Get price at the specified date (or most recent)
+        current_price = hist['Close'].iloc[-1]
+        
+        # Calculate volatility from returns
+        returns = np.log(hist['Close'] / hist['Close'].shift(1)).dropna()
+        volatility = returns.std() * np.sqrt(252)  # Annualized
+        
+        return current_price, volatility, hist
+    except Exception as e:
+        st.error(f"Error fetching SPY data: {e}")
+        return None, None, None
+
+
+# --- Plot SPY Price History ---
+def plot_spy_history(hist, selected_date=None):
+    """Plot SPY price history with optional date marker"""
+    fig, ax = plt.subplots(figsize=(14, 5))
+    fig.patch.set_facecolor('#0f172b')
+    ax.set_facecolor('#0f172b')
+    
+    ax.plot(hist.index, hist['Close'], color='#60a5fa', linewidth=2, label='SPY Close Price')
+    
+    if selected_date:
+        ax.axvline(x=selected_date, color='#f87171', linestyle='--', linewidth=2, label=f'Selected Date')
+    
+    ax.set_xlabel('Date', fontsize=12, color='#e2e8f0', fontweight='bold')
+    ax.set_ylabel('Price ($)', fontsize=12, color='#e2e8f0', fontweight='bold')
+    ax.set_title('SPY Historical Price', fontsize=14, fontweight='bold', color='#e2e8f0')
+    ax.tick_params(colors='#e2e8f0', labelsize=10)
+    ax.spines['bottom'].set_color('#314158')
+    ax.spines['top'].set_color('#314158')
+    ax.spines['left'].set_color('#314158')
+    ax.spines['right'].set_color('#314158')
+    ax.legend(facecolor='#1d293d', edgecolor='#314158', fontsize=10, labelcolor='#e2e8f0')
+    ax.grid(True, alpha=0.2, color='#314158', linestyle='--')
+    
+    return fig
+
+
+# --- Streamlit App ---
 st.set_page_config(
     page_title="CRR Option Pricer",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# --- Dark Blue Theme Styling ---
-st.markdown("""
-    <style>
-    /* Global layout */
-    .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 1rem;
-        padding-left: 3rem;
-        padding-right: 3rem;
-        background-color: #0A0F1F;
-        color: #EAEAEA;
-    }
-
-    /* Headings */
-    h1, h2, h3 {
-        font-family: 'Inter', sans-serif;
-        color: #3399FF;
-        font-weight: 700;
-        letter-spacing: 0.5px;
-    }
-
-    /* Sidebar */
-    [data-testid=stSidebar] {
-        background-color: #0E1628;
-        color: #EAEAEA;
-        padding-top: 1.5rem;
-    }
-    [data-testid=stSidebar] h2, [data-testid=stSidebar] h3 {
-        color: #4DA3FF;
-    }
-    [data-testid=stSidebar] label, [data-testid=stSidebar] span {
-        color: #CCCCCC !important;
-    }
-
-    /* Inputs */
-    input, select, textarea {
-        background-color: #1B253A !important;
-        color: #EAEAEA !important;
-        border: 1px solid #2E3A59 !important;
-        border-radius: 6px !important;
-    }
-
-    /* Buttons */
-    .stButton > button {
-        width: 100%;
-        background: linear-gradient(135deg, #1E3A8A, #2563EB);
-        color: white !important;
-        border: none;
-        border-radius: 8px;
-        font-weight: 600;
-        transition: all 0.2s ease-in-out;
-        box-shadow: 0px 0px 6px rgba(37, 99, 235, 0.5);
-    }
-    .stButton > button:hover {
-        transform: translateY(-1px);
-        background: linear-gradient(135deg, #2563EB, #1D4ED8);
-        box-shadow: 0px 0px 10px rgba(37, 99, 235, 0.8);
-    }
-
-    /* Metrics */
-    div[data-testid="stMetricValue"] {
-        font-size: 1.4rem;
-        font-weight: 600;
-        color: #4DA3FF;
-    }
-
-    /* Tabs */
-    [data-baseweb="tab-list"] {
-        background-color: #111827;
-        border-radius: 8px;
-        padding: 0.2rem;
-    }
-    [data-baseweb="tab"] {
-        color: #EAEAEA !important;
-        font-weight: 600;
-    }
-    [data-baseweb="tab"]:hover {
-        background-color: #1B253A !important;
-    }
-
-    /* Divider */
-    hr {
-        border: 1px solid #1E3A8A;
-        margin: 1.5rem 0;
-    }
-
-    /* Footer */
-    .footer {
-        text-align: center;
-        color: #888;
-        font-size: 0.8rem;
-        margin-top: 40px;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# --- Header ---
-st.title("Cox-Ross-Rubinstein Option Pricer")
+st.title("🌳 Cox-Ross-Rubinstein Option Pricer")
 st.caption("Bayre Adrien | Liu Jack | Hanna Gerguis Alexis | Milcent Marcellin | Jouonang Kapnang Sinthia Vanelle")
 
-# --- Sidebar Inputs ---
-with st.sidebar:
-    st.header("Model Parameters")
+# --- Layout: Left (Inputs) | Right (Outputs) ---
+left_col, right_col = st.columns([1, 2])
 
-    # Market variables
-    st.markdown("#### Market Variables")
-    S0 = st.number_input("Stock Price (S₀)", min_value=1.0, max_value=10000.0, value=100.0, step=1.0)
-    K = st.number_input("Strike Price (K)", min_value=1.0, max_value=10000.0, value=100.0, step=1.0)
+# ========== LEFT COLUMN: MODEL INPUTS ==========
+with left_col:
+    st.header("📊 Model Parameters")
+    
+    # Data Source Selection
+    st.subheader("Data Source")
+    data_source = st.radio("Choose data source:", ["Manual Input", "Fetch SPY Data", "SPY Backtesting"], horizontal=False)
+    
+    if data_source == "Fetch SPY Data":
+        if st.button("📈 Fetch Current SPY Data", use_container_width=True):
+            with st.spinner("Fetching current SPY data..."):
+                spy_price, spy_vol, spy_hist = fetch_spy_data()
+                if spy_price:
+                    st.session_state.spy_price = spy_price
+                    st.session_state.spy_vol = spy_vol
+                    st.session_state.spy_hist = spy_hist
+                    st.session_state.backtest_date = None
+                    st.success(f"✅ Fetched! Price: ${spy_price:.2f} | Vol: {spy_vol*100:.2f}%")
+                else:
+                    st.error("❌ Failed to fetch SPY data.")
+        
+        S0 = st.session_state.get('spy_price', 500.0)
+        sigma_pct = st.session_state.get('spy_vol', 0.15) * 100
+        st.info(f"📊 Using Current SPY: S₀ = ${S0:.2f}, σ = {sigma_pct:.1f}%")
+        sigma = sigma_pct / 100
+        
+    elif data_source == "SPY Backtesting":
+        st.subheader("🕒 Backtesting Date")
+        
+        # Date picker for backtesting
+        min_date = datetime(2010, 1, 1)
+        max_date = datetime.now() - timedelta(days=1)
+        default_date = datetime(2020, 1, 1)
+        
+        selected_date = st.date_input(
+            "Select historical date:",
+            value=default_date,
+            min_value=min_date,
+            max_value=max_date,
+            help="Select a date to backtest option pricing"
+        )
+        
+        lookback_period = st.selectbox(
+            "Volatility lookback period:",
+            [30, 60, 90, 180, 252],
+            index=4,
+            help="Number of trading days to calculate historical volatility"
+        )
+        
+        if st.button("📅 Load SPY Data for Selected Date", use_container_width=True):
+            with st.spinner(f"Fetching SPY data for {selected_date}..."):
+                backtest_datetime = datetime.combine(selected_date, datetime.min.time())
+                spy_price, spy_vol, spy_hist = fetch_spy_data(backtest_datetime, lookback_period)
+                if spy_price:
+                    st.session_state.spy_price = spy_price
+                    st.session_state.spy_vol = spy_vol
+                    st.session_state.spy_hist = spy_hist
+                    st.session_state.backtest_date = backtest_datetime
+                    st.success(f"✅ Loaded! Price on {selected_date}: ${spy_price:.2f} | Vol: {spy_vol*100:.2f}%")
+                else:
+                    st.error("❌ Failed to fetch data for selected date.")
+        
+        S0 = st.session_state.get('spy_price', 500.0)
+        sigma_pct = st.session_state.get('spy_vol', 0.15) * 100
+        backtest_date = st.session_state.get('backtest_date', None)
+        
+        if backtest_date:
+            st.info(f"📅 Backtesting {backtest_date.date()}: S₀ = ${S0:.2f}, σ = {sigma_pct:.1f}%")
+        else:
+            st.warning("⚠️ Please load data for the selected date")
+        
+        sigma = sigma_pct / 100
+        
+    else:
+        # Manual Input
+        S0 = st.number_input("Stock Price (S₀)", min_value=1.0, value=100.0, step=1.0)
+        sigma_pct = st.number_input("Volatility (%)", min_value=1.0, value=20.0, step=1.0)
+        sigma = sigma_pct / 100
+    
+    st.divider()
+    
+    # Other Parameters
+    st.subheader("Option Parameters")
+    K = st.number_input("Strike Price (K)", min_value=1.0, value=100.0, step=1.0)
+    T = st.number_input("Time to Maturity (Years)", min_value=0.01, max_value=10.0, value=1.0, step=0.1)
+    r_pct = st.number_input("Risk-free Rate (%)", min_value=0.0, max_value=30.0, value=4.0, step=0.5)
+    r = r_pct / 100
+    
+    st.divider()
+    
+    st.subheader("Option Type")
+    option_type = st.radio("Type:", ["Call", "Put"], horizontal=True)
+    exercise_type = st.radio("Exercise:", ["European", "American"], horizontal=True)
+    
+    st.divider()
+    
+    # Convergence Slider
+    st.subheader("🎯 Convergence Analysis")
+    N = st.slider(
+        "Number of Steps (N)",
+        min_value=2,
+        max_value=200,
+        value=50,
+        step=1,
+        help="Adjust to see CRR price converge to Black-Scholes"
+    )
+    
+    st.divider()
+    compute_btn = st.button("🚀 Compute Option Price", use_container_width=True, type="primary")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        T = st.number_input("Maturity (Years)", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
-    with col2:
-        N = st.number_input("Steps (N)", min_value=2, max_value=200, value=50, step=1)
-
-    col3, col4 = st.columns(2)
-    with col3:
-        r = st.number_input("Risk-free rate (%)", min_value=0.0, max_value=100.0, value=5.0, step=0.1) / 100
-    with col4:
-        sigma = st.number_input("Volatility (%)", min_value=0.0, max_value=200.0, value=20.0, step=0.1) / 100
-
-    st.markdown("---")
-
-    # Option type
-    st.markdown("#### Option Specification")
-    option_type = st.radio("Option Type", ["Call", "Put"], horizontal=True)
-    exercise_type = st.radio("Exercise", ["European", "American"], horizontal=True)
-
-    st.markdown("---")
-    compute_btn = st.button("Compute Option", use_container_width=True)
-
-# --- Computation ---
-if compute_btn or 'pricer' not in st.session_state:
-    pricer = CRROptionPricer(S0, K, T, r, sigma, int(N),
-                             option_type.lower(), exercise_type.lower())
-    price = pricer.price()
+# --- Compute Pricing ---
+if compute_btn or 'crr_price' not in st.session_state:
+    pricer = CRROptionPricer(S0, K, T, r, sigma, int(N), option_type.lower(), exercise_type.lower())
+    crr_price = pricer.price()
+    bs_price = black_scholes_price(S0, K, T, r, sigma, option_type.lower()) if exercise_type == "European" else None
+    
     st.session_state.pricer = pricer
-    st.session_state.price = price
+    st.session_state.crr_price = crr_price
+    st.session_state.bs_price = bs_price
+    st.session_state.params = (S0, K, T, r, sigma, option_type, exercise_type, N)
 else:
     pricer = st.session_state.pricer
-    price = st.session_state.price
+    crr_price = st.session_state.crr_price
+    bs_price = st.session_state.bs_price
+    S0, K, T, r, sigma, option_type, exercise_type, N = st.session_state.params
 
-# --- Display ---
-st.markdown("## Option Summary")
+# ========== TOP: PRICE & MONEYNESS DISPLAY ==========
+st.divider()
 
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("Option Price", f"${price:.4f}")
-with col2:
-    intrinsic = max(S0 - K, 0) if option_type == "Call" else max(K - S0, 0)
-    st.metric("Intrinsic", f"${intrinsic:.4f}")
-with col3:
-    st.metric("Time Value", f"${price - intrinsic:.4f}")
-with col4:
-    moneyness = (
-        "ATM" if abs(S0 - K) < 1
-        else "ITM" if (S0 > K and option_type == "Call") or (S0 < K and option_type == "Put")
-        else "OTM"
-    )
-    st.metric("Moneyness", moneyness)
+intrinsic = max(S0 - K, 0) if option_type == "Call" else max(K - S0, 0)
+moneyness = (
+    "🎯 ATM" if abs(S0 - K) < 1
+    else "💰 ITM" if (S0 > K and option_type == "Call") or (S0 < K and option_type == "Put")
+    else "📉 OTM"
+)
+
+cols = st.columns(5)
+cols[0].metric("💵 CRR Price", f"${crr_price:.4f}")
+if bs_price:
+    cols[1].metric("📊 Black-Scholes", f"${bs_price:.4f}")
+    cols[2].metric("📉 Difference", f"${abs(crr_price - bs_price):.4f}")
+else:
+    cols[1].metric("📊 Black-Scholes", "N/A (American)")
+    cols[2].metric("📉 Difference", "N/A")
+cols[3].metric("💎 Intrinsic Value", f"${intrinsic:.4f}")
+cols[4].metric("Moneyness", moneyness)
 
 st.divider()
 
-# --- Greeks ---
-with st.expander("Greeks", expanded=False):
-    greeks = pricer.get_greeks()
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1: st.metric("Δ (Delta)", f"{greeks['Delta']:.4f}")
-    with col2: st.metric("Γ (Gamma)", f"{greeks['Gamma']:.4f}")
-    with col3: st.metric("Θ (Theta)", f"{greeks['Theta']:.4f}")
-    with col4: st.metric("ν (Vega)", f"{greeks['Vega']:.4f}")
-    with col5: st.metric("ρ (Rho)", f"{greeks['Rho']:.4f}")
-
-# --- Binomial Trees ---
-st.markdown("## Binomial Trees")
-
-tab1, tab2 = st.tabs(["Stock Price Tree", "Option Value Tree"])
-with tab1:
-    fig_stock = pricer.plot_tree(pricer.stock_tree, "Stock Price Tree", "stock")
-    st.pyplot(fig_stock)
-    plt.close()
-
-with tab2:
-    fig_option = pricer.plot_tree(pricer.option_tree, "Option Value Tree", "option")
-    st.pyplot(fig_option)
-    plt.close()
+# ========== RIGHT COLUMN: VISUALIZATIONS ==========
+with right_col:
+    
+    # --- SPY Price History (if available) ---
+    if 'spy_hist' in st.session_state and st.session_state.spy_hist is not None:
+        st.header("📈 SPY Price History")
+        spy_hist = st.session_state.spy_hist
+        backtest_date = st.session_state.get('backtest_date', None)
+        
+        fig_spy = plot_spy_history(spy_hist, backtest_date)
+        st.pyplot(fig_spy)
+        plt.close()
+        
+        st.divider()
+    
+    # --- Option Value Tree ---
+    st.header("🌳 Option Value Tree")
+    if pricer.option_tree is not None:
+        fig_option = pricer.plot_tree(pricer.option_tree, f"{exercise_type} {option_type} - Option Value Tree", "option")
+        st.pyplot(fig_option)
+        plt.close()
+    
+    st.divider()
+    
+    # --- Convergence to Black-Scholes ---
+    st.header("🔄 CRR Convergence to Black-Scholes")
+    
+    if exercise_type == "European":
+        steps_range = list(range(2, min(201, N + 50), 2))
+        crr_prices = []
+        
+        with st.spinner("Computing convergence..."):
+            for n in steps_range:
+                temp_pricer = CRROptionPricer(S0, K, T, r, sigma, n, option_type.lower(), 'european')
+                crr_prices.append(temp_pricer.price())
+        
+        # Plot convergence
+        fig_conv, ax = plt.subplots(figsize=(12, 6))
+        fig_conv.patch.set_facecolor('#0f172b')
+        ax.set_facecolor('#0f172b')
+        
+        ax.plot(steps_range, crr_prices, 'o-', color='#60a5fa', linewidth=2, markersize=5, label='CRR Price', alpha=0.8)
+        ax.axhline(y=bs_price, color='#34d399', linestyle='--', linewidth=2.5, label='Black-Scholes Price')
+        ax.axvline(x=N, color='#f87171', linestyle=':', linewidth=2.5, alpha=0.8, label=f'Current N = {N}')
+        
+        ax.set_xlabel('Number of Steps (N)', fontsize=13, color='#e2e8f0', fontweight='bold')
+        ax.set_ylabel('Option Price ($)', fontsize=13, color='#e2e8f0', fontweight='bold')
+        # ax.set_title('CRR Convergence to Black-Scholes', fontsize=15, fontweight='bold', color='#e2e8f0')
+        ax.tick_params(colors='#e2e8f0', labelsize=11)
+        ax.spines['bottom'].set_color('#314158')
+        ax.spines['top'].set_color('#314158')
+        ax.spines['left'].set_color('#314158')
+        ax.spines['right'].set_color('#314158')
+        ax.legend(facecolor='#1d293d', edgecolor='#314158', fontsize=11, labelcolor='#e2e8f0')
+        ax.grid(True, alpha=0.2, color='#314158', linestyle='--')
+        
+        st.pyplot(fig_conv)
+        plt.close()
+    else:
+        st.info("Convergence analysis only available for European options")
+    
+    st.divider()
+    
+    # --- Greeks ---
+    with st.expander("Option Greeks", expanded=True):
+        greeks = pricer.get_greeks()
+        cols = st.columns(5)
+        cols[0].metric("Δ Delta", f"{greeks['Delta']:.4f}")
+        cols[1].metric("Γ Gamma", f"{greeks['Gamma']:.4f}")
+        cols[2].metric("Θ Theta", f"{greeks['Theta']:.4f}")
+        cols[3].metric("ν Vega", f"{greeks['Vega']:.4f}")
+        cols[4].metric("ρ Rho", f"{greeks['Rho']:.4f}")
 
 # --- Footer ---
-st.markdown('<p class="footer">Built with Streamlit | CRR Model Visualizer © 2025</p>', unsafe_allow_html=True)
+st.divider()
+st.markdown('<p style="text-align:center; color:#8A94B0; margin-top:20px;">ESILV Paris | CRR & Black Scholes Visualizer v0.1 © 2025</p>', unsafe_allow_html=True)
