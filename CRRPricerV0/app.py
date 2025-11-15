@@ -6,6 +6,7 @@ from scipy.stats import norm
 import yfinance as yf
 from datetime import datetime, timedelta
 import pandas as pd
+import plotly.graph_objects as go
 
 # --- CRR Option Pricer Class ---
 class CRROptionPricer:
@@ -216,7 +217,7 @@ def fetch_spy_data(backtest_date=None, lookback_days=252):
             hist_backtest = hist_full[hist_full.index <= backtest_date]
             
             if len(hist_backtest) == 0:
-                return None, None, None, None
+                return None, None, None, None, None
             
             # Get price at the backtest date
             current_price = hist_backtest['Close'].iloc[-1]
@@ -225,68 +226,87 @@ def fetch_spy_data(backtest_date=None, lookback_days=252):
             returns = np.log(hist_backtest['Close'] / hist_backtest['Close'].shift(1)).dropna()
             volatility = returns.std() * np.sqrt(252)  # Annualized
             
-            return current_price, volatility, hist_full, backtest_date
+            # Calculate lookback start date
+            lookback_start = hist_backtest.index[-min(lookback_days, len(hist_backtest))]
+            
+            return current_price, volatility, hist_full, backtest_date, lookback_start
         else:
             # Current data: fetch last year
             hist = spy.history(period="1y")
             
             if len(hist) == 0:
-                return None, None, None, None
+                return None, None, None, None, None
             
             current_price = hist['Close'].iloc[-1]
             returns = np.log(hist['Close'] / hist['Close'].shift(1)).dropna()
             volatility = returns.std() * np.sqrt(252)  # Annualized
             
-            return current_price, volatility, hist, None
+            return current_price, volatility, hist, None, None
     except Exception as e:
         st.error(f"Error fetching SPY data: {e}")
-        return None, None, None, None
+        return None, None, None, None, None
 
 
 # --- Plot SPY Price History ---
 def plot_spy_history(hist, selected_date=None, lookback_date=None):
-    """Plot SPY price history with optional date markers"""
-    fig, ax = plt.subplots(figsize=(14, 5))
-    fig.patch.set_facecolor('#0f172b')
-    ax.set_facecolor('#0f172b')
-    
-    # Plot full history
-    ax.plot(hist.index, hist['Close'], color='#60a5fa', linewidth=1, label='S&P 500 Close Price')
+    """Plot SPY price history with optional date markers (Plotly version)."""
+
+    fig = go.Figure()
+
+    # Main price line
+    fig.add_trace(go.Scatter(
+        x=hist.index,
+        y=hist['Close'],
+        mode='lines',
+        name='S&P 500 Close Price'
+    ))
+
     # Convert dates to timezone-aware if needed
     if hist.index.tz is not None:
         if selected_date and selected_date.tzinfo is None:
             selected_date = selected_date.replace(tzinfo=hist.index.tz)
         if lookback_date and lookback_date.tzinfo is None:
             lookback_date = lookback_date.replace(tzinfo=hist.index.tz)
-    # Mark the lookback period start (for volatility calculation)
+
+    # Shade lookback window (volatility period)
     if lookback_date and selected_date:
-        # Shade the lookback period used for volatility
-        ax.axvspan(lookback_date, selected_date, alpha=0.2, color='#34d399', label='Volatility Lookback Period')
-    
-    # Mark the selected backtest date
+        fig.add_vrect(
+            x0=lookback_date,
+            x1=selected_date,
+            fillcolor="lightgreen",
+            opacity=0.25,
+            layer="below",
+            line_width=0,
+        )
+
+    # Mark backtest date
     if selected_date:
-        ax.axvline(x=selected_date, color='#f87171', linestyle='--', linewidth=1.5, 
-                   label=f'Backtest Date: {selected_date.date()}')
-        
-        # Add annotation
+        fig.add_vline(
+            x=selected_date,
+            line_width=2,
+            line_dash="dash",
+            line_color="orange",
+        )
+
+        # Annotate price at selected date
         price_at_date = hist[hist.index <= selected_date]['Close'].iloc[-1]
-        ax.annotate(f'${price_at_date:.2f}', 
-                   xy=(selected_date, price_at_date),
-                   xytext=(10, 10), textcoords='offset points',
-                   color='#f87171', fontweight='bold', fontsize=10,
-                   bbox=dict(boxstyle='round,pad=0.5', facecolor='#1d293d', edgecolor='#f87171'))
-    
-    ax.set_xlabel('Date', fontsize=12, color='#e2e8f0', fontweight='bold')
-    ax.set_ylabel('Price ($)', fontsize=12, color='#e2e8f0', fontweight='bold')
-    # ax.set_title('S&P 500 Price Evolution (Lookback Period → Present)', fontsize=14, fontweight='bold', color='#e2e8f0')
-    ax.tick_params(colors='#e2e8f0', labelsize=10)
-    ax.spines['bottom'].set_color('#314158')
-    ax.spines['top'].set_color('#314158')
-    ax.spines['left'].set_color('#314158')
-    ax.spines['right'].set_color('#314158')
-    ax.legend(facecolor='#1d293d', edgecolor='#314158', fontsize=10, labelcolor='#e2e8f0')
-    ax.grid(True, alpha=0.2, color='#314158', linestyle='--')
-    
+        fig.add_annotation(
+            x=selected_date,
+            y=price_at_date,
+            text=f"{price_at_date:.2f}",
+            showarrow=True,
+            arrowhead=1
+        )
+
+    # Layout
+    fig.update_layout(
+        height=400,
+        margin=dict(l=40, r=40, t=40, b=40),
+        legend=dict(x=0.01, y=0.99),
+        xaxis_title="Date",
+        yaxis_title="Price ($)",
+    )
+
     return fig
 
 
@@ -314,12 +334,13 @@ with left_col:
     if data_source == "Current S&P500 Data":
         if st.button("Load Current S&P500 Data", use_container_width=True):
             with st.spinner("Fetching current S&P500 data..."):
-                spy_price, spy_vol, spy_hist, _ = fetch_spy_data()
+                spy_price, spy_vol, spy_hist, _, _ = fetch_spy_data()
                 if spy_price:
                     st.session_state.spy_price = spy_price
                     st.session_state.spy_vol = spy_vol
                     st.session_state.spy_hist = spy_hist
                     st.session_state.backtest_date = None
+                    st.session_state.lookback_date = None
                     st.success(f"Fetched! Price: ${spy_price:.2f} | Volatility: {spy_vol*100:.2f}%")
                 else:
                     st.error("Failed to fetch S&P500 data.")
@@ -355,12 +376,13 @@ with left_col:
         if st.button("Load S&P500 Data for Selected Date", use_container_width=True):
             with st.spinner(f"Fetching S&P500 data for {selected_date}..."):
                 backtest_datetime = datetime.combine(selected_date, datetime.min.time())
-                spy_price, spy_vol, spy_hist, backtest_dt = fetch_spy_data(backtest_datetime, lookback_period)
+                spy_price, spy_vol, spy_hist, backtest_dt, lookback_dt = fetch_spy_data(backtest_datetime, lookback_period)
                 if spy_price:
                     st.session_state.spy_price = spy_price
                     st.session_state.spy_vol = spy_vol
                     st.session_state.spy_hist = spy_hist
                     st.session_state.backtest_date = backtest_datetime
+                    st.session_state.lookback_date = lookback_dt
                     st.success(f"Loaded! Price on {selected_date}: ${spy_price:.2f} | Vol: {spy_vol*100:.2f}%")
                 else:
                     st.error("Failed to fetch data for selected date.")
@@ -459,11 +481,11 @@ with right_col:
     if 'spy_hist' in st.session_state and st.session_state.spy_hist is not None:
         st.header("S&P 500 Price History")
         spy_hist = st.session_state.spy_hist
-        backtest_date = st.session_state.get('backtest_date', None)
+        backtest_date_plot = st.session_state.get('backtest_date', None)
+        lookback_date_plot = st.session_state.get('lookback_date', None)
         
-        fig_spy = plot_spy_history(spy_hist, backtest_date)
-        st.pyplot(fig_spy)
-        plt.close()
+        fig = plot_spy_history(spy_hist, backtest_date_plot, lookback_date_plot)
+        st.plotly_chart(fig, use_container_width=True)
         
         st.divider()
     
@@ -499,7 +521,6 @@ with right_col:
         
         ax.set_xlabel('Number of Steps (N)', fontsize=13, color='#e2e8f0', fontweight='bold')
         ax.set_ylabel('Option Price ($)', fontsize=13, color='#e2e8f0', fontweight='bold')
-        # ax.set_title('CRR Convergence to Black-Scholes', fontsize=15, fontweight='bold', color='#e2e8f0')
         ax.tick_params(colors='#e2e8f0', labelsize=11)
         ax.spines['bottom'].set_color('#314158')
         ax.spines['top'].set_color('#314158')
@@ -511,7 +532,7 @@ with right_col:
         st.pyplot(fig_conv)
         plt.close()
     else:
-        st.info("ℹConvergence analysis only available for European options")
+        st.info("Convergence analysis only available for European options")
     
     st.divider()
     

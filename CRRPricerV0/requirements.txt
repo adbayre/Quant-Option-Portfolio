@@ -5,3 +5,4 @@ scipy
 pandas
 datetime
 yfinance
+plotly
