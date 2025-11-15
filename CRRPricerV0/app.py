@@ -274,7 +274,7 @@ def plot_spy_history(hist, selected_date=None, lookback_date=None):
             x0=lookback_date,
             x1=selected_date,
             fillcolor="lightgreen",
-            opacity=0.25,
+            opacity=0.20,
             layer="below",
             line_width=0,
         )
@@ -283,9 +283,9 @@ def plot_spy_history(hist, selected_date=None, lookback_date=None):
     if selected_date:
         fig.add_vline(
             x=selected_date,
-            line_width=2,
+            line_width=1,
             line_dash="dash",
-            line_color="orange",
+            line_color="#ff6a00",
         )
 
         # Annotate price at selected date
@@ -305,6 +305,8 @@ def plot_spy_history(hist, selected_date=None, lookback_date=None):
         legend=dict(x=0.01, y=0.99),
         xaxis_title="Date",
         yaxis_title="Price ($)",
+        plot_bgcolor='#0f172b',
+        paper_bgcolor='#0f172b'
     )
 
     return fig
