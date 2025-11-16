@@ -7,7 +7,7 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import pandas as pd
 import plotly.graph_objects as go
-
+from plotly.subplots import make_subplots
 # --- CRR Option Pricer Class ---
 class CRROptionPricer:
     """Cox-Ross-Rubinstein Binomial Tree Option Pricer"""
@@ -178,7 +178,7 @@ class CRROptionPricer:
                 line=dict(color='#e2e8f0', width=2) # Circle border
             ),
             textfont=dict(
-                color='#0f172b', # Dark text for contrast on light circles
+                color='#0f172b',
                 size=font_size,
                 family='Arial, sans-serif',
             ),
@@ -187,16 +187,7 @@ class CRROptionPricer:
         ))
 
         # --- 4. Finalize Layout ---
-        # This replaces all the 'ax.set...' and 'fig.patch...' calls
         fig.update_layout(
-            title={
-                'text': title,
-                'y':0.95,
-                'x':0.5,
-                'xanchor': 'center',
-                'yanchor': 'top',
-                'font': dict(size=18, color='#e2e8f0', family='Arial, sans-serif')
-            },
             plot_bgcolor='#0f172b', # ax.set_facecolor
             paper_bgcolor='#0f172b', # fig.patch.set_facecolor
             showlegend=False,
@@ -290,7 +281,90 @@ def black_scholes_price(S, K, T, r, sigma, option_type='call'):
     
     return price
 
+def plot_convergence_plotly(steps_range, crr_prices, bs_price, N):
+    """
+    Plots the convergence of CRR option prices to Black-Scholes using Plotly.
+    """
+    
+    # --- 1. Initialize Figure ---
+    fig = go.Figure()
 
+    # --- 2. CRR Price Convergence Line ---
+    fig.add_trace(go.Scatter(
+        x=steps_range,
+        y=crr_prices,
+        mode='lines+markers',
+        name='CRR Price',
+        line=dict(color='#60a5fa', width=2),
+        marker=dict(symbol='circle', size=7, color='#60a5fa', line=dict(width=1, color='DarkSlateGrey')),
+        hovertemplate="<b>Steps: %{x}</b><br>CRR Price: $%{y:.4f}<extra></extra>"
+    ))
+
+    # --- 3. Black-Scholes Price Horizontal Line ---
+    fig.add_trace(go.Scatter(
+        x=[min(steps_range), max(steps_range)], # Span the full x-range
+        y=[bs_price, bs_price],
+        mode='lines',
+        name='Black-Scholes Price',
+        line=dict(color='#34d399', width=2.5),
+        hovertemplate="<b>Black-Scholes Price: $%{y:.4f}</b><extra></extra>"
+    ))
+
+    # --- 4. Vertical Line for Current N ---
+    fig.add_trace(go.Scatter(
+        x=[N, N],
+        y=[min(crr_prices) * 0.9, max(crr_prices) * 2], # Extend beyond data for visibility
+        mode='lines',
+        name=f'Current N = {N}',
+        line=dict(color='#ff6a00', width=2.5, dash='dash'),
+        opacity=0.8,
+        hovertemplate=f"<b>Current N: {N}</b><extra></extra>"
+    ))
+
+    # --- 5. Finalize Layout ---
+    fig.update_layout(
+        plot_bgcolor='#0f172b', # Inner plot background
+        paper_bgcolor='#0f172b', # Entire figure background
+        
+        xaxis_title='Number of Steps (N)',
+        yaxis_title='Option Price ($)',
+        
+        xaxis=dict(
+            gridcolor='#314158',
+            gridwidth=1,
+            linecolor='#314158',
+            linewidth=1,
+            tickfont=dict(color='#e2e8f0', size=11),
+            # Optional: Ensure integer ticks if steps_range has large gaps
+            tickmode='array',
+            tickvals=steps_range if len(steps_range) < 20 else None # Show all ticks if few, else auto
+        ),
+        yaxis=dict(
+            gridcolor='#314158',
+            gridwidth=1,
+            linecolor='#314158',
+            linewidth=1,
+            tickfont=dict(color='#e2e8f0', size=11),
+            zeroline=False # Remove default plotly zero line if desired
+        ),
+        
+        legend=dict(
+            x=0.01, y=0.99, # Position legend top-left
+            bgcolor='#1d293d',
+            bordercolor='#314158',
+            borderwidth=1,
+            font=dict(color='#e2e8f0', size=12),
+            orientation='v' # Vertical legend
+        ),
+        
+        hovermode='x unified', # Shows info for all traces at a given x-value
+        
+        # Optional: Set default figure size
+        width=1000,
+        height=600
+    )
+    
+    return fig
 # --- Fetch SPY Historical Data ---
 def fetch_spy_data(backtest_date=None, lookback_days=252):
     """
@@ -537,7 +611,7 @@ with left_col:
         max_value=50,
         value=10,
         step=1,
-        help="Adjust to see CRR price converge to Black-Scholes"
+        help="Increase to see CRR price converge to Black-Scholes"
     )
     
     st.divider()
@@ -619,26 +693,9 @@ with right_col:
                 crr_prices.append(temp_pricer.price())
         
         # Plot convergence
-        fig_conv, ax = plt.subplots(figsize=(12, 6))
-        fig_conv.patch.set_facecolor('#0f172b')
-        ax.set_facecolor('#0f172b')
+        fig_conv = plot_convergence_plotly(steps_range, crr_prices, bs_price, N)
         
-        ax.plot(steps_range, crr_prices, 'o-', color='#60a5fa', linewidth=2, markersize=5, label='CRR Price', alpha=0.8)
-        ax.axhline(y=bs_price, color='#34d399', linestyle='--', linewidth=2.5, label='Black-Scholes Price')
-        ax.axvline(x=N, color='#f87171', linestyle=':', linewidth=2.5, alpha=0.8, label=f'Current N = {N}')
-        
-        ax.set_xlabel('Number of Steps (N)', fontsize=13, color='#e2e8f0', fontweight='bold')
-        ax.set_ylabel('Option Price ($)', fontsize=13, color='#e2e8f0', fontweight='bold')
-        ax.tick_params(colors='#e2e8f0', labelsize=11)
-        ax.spines['bottom'].set_color('#314158')
-        ax.spines['top'].set_color('#314158')
-        ax.spines['left'].set_color('#314158')
-        ax.spines['right'].set_color('#314158')
-        ax.legend(facecolor='#1d293d', edgecolor='#314158', fontsize=11, labelcolor='#e2e8f0')
-        ax.grid(True, alpha=0.2, color='#314158', linestyle='--')
-        
-        st.pyplot(fig_conv)
-        plt.close()
+        st.plotly_chart(fig_conv, use_container_width=True)
     else:
         st.info("Convergence analysis only available for European options")
     
