@@ -313,7 +313,7 @@ def plot_convergence_plotly(steps_range, crr_prices, bs_price, N):
     # --- 4. Vertical Line for Current N ---
     fig.add_trace(go.Scatter(
         x=[N, N],
-        y=[min(crr_prices) * 0.9, max(crr_prices) * 2], # Extend beyond data for visibility
+        y=[min(crr_prices) * 0.9, max(crr_prices) * 1.1], # Extend beyond data for visibility
         mode='lines',
         name=f'Current N = {N}',
         line=dict(color='#ff6a00', width=2.5, dash='dash'),
