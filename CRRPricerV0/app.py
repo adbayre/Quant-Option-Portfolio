@@ -66,51 +66,157 @@ class CRROptionPricer:
         return self.option_tree[0, 0]
     
     def plot_tree(self, tree, title, tree_type):
-        fig, ax = plt.subplots(figsize=(14, 9))
-        fig.patch.set_facecolor('#0f172b')
-        ax.set_facecolor('#0f172b')
-        
-        ax.set_xlim(-0.5, self.N + 0.5)
-        ax.set_ylim(-0.5, self.N + 0.5)
-        ax.set_aspect('equal')
-        ax.axis('off')
-        ax.set_title(title, fontsize=18, fontweight='bold', pad=20, color='#e2e8f0')
-        
+        """
+        Plots the binomial tree using Plotly for an interactive and prettier visualization.
+        """
+    
+        # --- 1. Initialize Figure ---
+        fig = go.Figure()
+    
+        # --- 2. Prepare Edge (Line) Traces ---
+        # Plotly draws lines faster by taking all points at once.
+        # We use 'None' to create breaks in the lines, so one 'trace'
+        # can draw all the separate edges.
+    
+        edge_x_up = []
+        edge_y_up = []
+        edge_x_down = []
+        edge_y_down = []
+    
         dx = 1.0
         dy = 1.0
-        
-        # Draw edges
+
         for i in range(self.N):
             for j in range(i + 1):
-                x = i * dx
-                y = (self.N - i) / 2 + j * dy
-                ax.plot([x, i+1], [y, (self.N - i - 1)/2 + j*dy], color='#3b82f6', alpha=0.3, linewidth=1.5)
-                ax.plot([x, i+1], [y, (self.N - i - 1)/2 + (j+1)*dy], color='#ef4444', alpha=0.3, linewidth=1.5)
-        
-        # Draw nodes
+                x_start = i * dx
+                y_start = (self.N - i) / 2 + j * dy
+                x_end = (i + 1) * dx
+            
+                # Up-move coordinates
+                y_end_up = (self.N - (i + 1)) / 2 + j * dy
+                edge_x_up.extend([x_start, x_end, None])
+                edge_y_up.extend([y_start, y_end_up, None])
+            
+                # Down-move coordinates
+                y_end_down = (self.N - (i + 1)) / 2 + (j + 1) * dy
+                edge_x_down.extend([x_start, x_end, None])
+                edge_y_down.extend([y_start, y_end_down, None])
+
+        # Add the "up" edges trace
+        fig.add_trace(go.Scatter(
+            x=edge_x_up,
+            y=edge_y_up,
+            mode='lines',
+            line=dict(color='#3b82f6', width=1.5),
+            opacity=0.3,
+            hoverinfo='none' # Disable hover for lines
+        ))
+    
+        # Add the "down" edges trace
+        fig.add_trace(go.Scatter(
+            x=edge_x_down,
+            y=edge_y_down,
+            mode='lines',
+            line=dict(color='#ef4444', width=1.5),
+            opacity=0.3,
+            hoverinfo='none' # Disable hover for lines
+        ))
+
+        # --- 3. Prepare Node (Marker) Trace ---
+        # We will plot all nodes, text, and colors in a single Scatter trace
+        node_x = []
+        node_y = []
+        node_colors = []
+        node_texts = []
+        hover_texts = []
+
         for i in range(self.N + 1):
             for j in range(i + 1):
                 x = i * dx
                 y = (self.N - i) / 2 + j * dy
                 value = tree[j, i]
-                
+            
+                node_x.append(x)
+                node_y.append(y)
+                node_texts.append(f'{value:.2f}')
+            
+                # --- Conditional Color Logic (same as yours) ---
                 if tree_type == 'option' and self.exercise_type == 'american' and i < self.N:
                     stock_price = self.stock_tree[j, i]
                     intrinsic = self.payoff(stock_price)
                     if abs(value - intrinsic) < 1e-6 and intrinsic > 0:
-                        color = '#f87171'
+                        color = '#f87171' # Red: Early exercise
+                        hover_texts.append(f'Step: {i}<br>Node: {j}<br>Value: {value:.4f}<br><b>(Early Exercise)</b>')
                     else:
-                        color = '#60a5fa'
+                        color = '#60a5fa' # Blue: Hold
+                        hover_texts.append(f'Step: {i}<br>Node: {j}<br>Value: {value:.4f}<br>(Hold)')
                 else:
-                    color = '#34d399' if i == self.N else '#60a5fa'
-                
-                circle = plt.Circle((x, y), 0.15, color=color, ec='#e2e8f0', linewidth=2)
-                ax.add_patch(circle)
-                ax.text(x, y, f'{value:.2f}', ha='center', va='center', 
-                       fontsize=8 if self.N > 8 else 9, fontweight='bold', color='#0f172b')
+                    if i == self.N:
+                        color = '#34d399' # Green: Terminal node
+                        hover_texts.append(f'Step: {i}<br>Node: {j}<br><b>Terminal Value: {value:.4f}</b>')
+                    else:
+                        color = '#60a5fa' # Blue: Intermediate node
+                        hover_texts.append(f'Step: {i}<br>Node: {j}<br>Value: {value:.4f}')
+            
+                node_colors.append(color)
+
+        # Dynamically adjust size based on N
+        font_size = 9 if self.N > 9 else 10
+        marker_size = max(15, 45 - self.N * 1.5) # Decrease marker size as N grows
+
+        # Add the single trace for all nodes
+        fig.add_trace(go.Scatter(
+            x=node_x,
+            y=node_y,
+            text=node_texts,
+            hovertext=hover_texts,
+            mode='markers+text',
+            hoverinfo='text',
+            marker=dict(
+                color=node_colors,
+                size=marker_size,
+                line=dict(color='#e2e8f0', width=2) # Circle border
+            ),
+            textfont=dict(
+                color='#0f172b', # Dark text for contrast on light circles
+                size=font_size,
+                family='Arial, sans-serif',
+            ),
+            textfont_weight='bold', # Use property directly
+            textposition='middle center'
+        ))
+
+        # --- 4. Finalize Layout ---
+        # This replaces all the 'ax.set...' and 'fig.patch...' calls
+        fig.update_layout(
+            title={
+                'text': title,
+                'y':0.95,
+                'x':0.5,
+                'xanchor': 'center',
+                'yanchor': 'top',
+                'font': dict(size=18, color='#e2e8f0', family='Arial, sans-serif')
+            },
+            plot_bgcolor='#0f172b', # ax.set_facecolor
+            paper_bgcolor='#0f172b', # fig.patch.set_facecolor
+            showlegend=False,
+            width=1000, # Set a default size (optional, Plotly is responsive)
+            height=700,
         
-        return fig
+            # --- Axis control ---
+            xaxis=dict(
+                visible=False,
+                range=[-0.5, self.N + 0.5] # ax.set_xlim
+            ),
+            yaxis=dict(
+                visible=False,
+                range=[-0.5, self.N + 0.5], # ax.set_ylim
+                scaleanchor="x",  # ax.set_aspect('equal')
+                scaleratio=1
+            )
+        )
     
+        return fig
     def get_greeks(self, epsilon=0.01):
         base_price = self.price()
         
@@ -495,7 +601,7 @@ with right_col:
     st.header("Option Value Tree")
     if pricer.option_tree is not None:
         fig_option = pricer.plot_tree(pricer.option_tree, f"{exercise_type} {option_type} - Option Value Tree", "option")
-        st.pyplot(fig_option)
+        st.plotly_chart(fig_option, use_container_width=True)
         plt.close()
     
     st.divider()
