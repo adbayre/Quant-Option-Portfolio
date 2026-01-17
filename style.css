@@ -1,0 +1,129 @@
+/* style.css */
+
+/* 0. IMPORT FONTS (FactSet uses clean, standard sans-serifs like Roboto/Open Sans) */
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Source+Code+Pro:wght@400;600&display=swap');
+
+/* 1. RESET & VARIABLES */
+:root {
+  /* 🔵 Brand Colors (FactSet Blue) */
+  --color-primary: #1C97F3;         /* Bright UI Blue */
+  --color-primary-hover: #0077CC;   /* Deep Interaction Blue */
+  --color-primary-glow: rgba(28, 151, 243, 0.2);
+
+  /* 🟢🔴 Semantic Colors */
+  --color-success: #00C853;         /* Sharp Green */
+  --color-danger: #FF3D00;          /* Sharp Red */
+  --color-info: #B0BEC5;            /* Neutral Grey for info */
+
+  /* 🌑 Backgrounds & Surfaces (Deep Slate Blue/Grey) */
+  --bg-app: #0F1216;               /* Dark Slate Background */
+  --bg-surface: #1E2329;           /* Lighter Panel Background */
+  --bg-input: #15191F;             /* Input Field Background */
+
+  /* 📏 Borders */
+  --border-subtle: #2C333D;
+  --border-strong: #1C97F3;        /* Blue Highlight Borders */
+
+  /* 🔠 Typography System */
+  --font-ui: 'Roboto', sans-serif;
+  --font-mono: 'Source Code Pro', monospace;
+  
+  --text-main: #FFFFFF;
+  --text-muted: #90A4AE;
+}
+
+/* 2. GLOBAL OVERRIDES */
+.stApp {
+    background-color: var(--bg-app);
+    color: var(--text-main);
+    font-family: var(--font-ui);
+}
+
+/* Headings: Clean, Non-Italic, Professional */
+h1, h2, h3, h4, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+    font-family: var(--font-ui) !important;
+    font-weight: 300 !important; /* Thinner weights look more premium */
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-main) !important;
+}
+
+/* Metric Labels */
+div[data-testid="stMetricLabel"] label {
+    font-family: var(--font-ui) !important;
+    color: var(--text-muted) !important;
+    font-weight: 500;
+    font-size: 0.75rem !important;
+}
+
+/* Metric Values */
+div[data-testid="stMetricValue"] {
+    font-family: var(--font-ui) !important;
+    color: var(--color-primary) !important;
+    font-weight: 300 !important;
+}
+
+/* Buttons (Sharp Rectangles, Blue) */
+.stButton > button {
+    background-color: var(--color-primary);
+    color: #FFFFFF;
+    border: none;
+    font-family: var(--font-ui);
+    font-weight: 500;
+    text-transform: uppercase;
+    border-radius: 0px; /* Sharp edges for FactSet look */
+    transition: all 0.2s;
+}
+.stButton > button:hover {
+    background-color: var(--color-primary-hover);
+    box-shadow: 0 4px 12px var(--color-primary-glow);
+}
+
+/* Inputs */
+.stTextInput > div > div > input, .stNumberInput > div > div > input, .stSelectbox > div > div {
+    background-color: var(--bg-input);
+    color: var(--text-main);
+    border: 1px solid var(--border-subtle);
+    font-family: var(--font-ui);
+    border-radius: 0px; /* Sharp inputs */
+}
+.stTextInput > div > div > input:focus, .stNumberInput > div > div > input:focus {
+    border-color: var(--color-primary);
+}
+
+/* Custom CSS Classes for app.py */
+.factset-panel {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-top: 2px solid var(--color-primary); /* Blue Top Border */
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.metric-card-container {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    padding: 15px;
+    margin: 5px;
+}
+.metric-label {
+    font-family: var(--font-ui);
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+.metric-value {
+    font-family: var(--font-ui);
+    color: var(--text-main);
+    font-size: 26px;
+    font-weight: 300;
+    margin-top: 4px;
+}
+.metric-delta {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    margin-top: 4px;
+}
+.delta-pos { color: var(--color-success); }
+.delta-neg { color: var(--color-danger); }
