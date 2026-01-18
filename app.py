@@ -5,6 +5,7 @@ import pandas as pd
 import scipy.stats as si
 from scipy.interpolate import griddata
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime
 
 # -----------------------------------------------------------------------------
@@ -32,7 +33,7 @@ st.markdown("""
     .stPills button { background-color: #15191F !important; border: 1px solid var(--border) !important; color: #fff !important; border-radius: 0px !important; }
     .stPills button[aria-selected="true"] { background-color: var(--primary) !important; border-color: var(--primary) !important; }
     
-    /* CUSTOM CLASSES FOR HEDGING UI */
+    /* CUSTOM CLASSES */
     .hedge-box { border: 1px solid var(--border); padding: 15px; margin-bottom: 10px; background: #15191F; }
     .hedge-rec { font-family: 'Source Code Pro', monospace; color: #00C853; font-size: 18px; font-weight: 600; }
     .hedge-warn { font-family: 'Source Code Pro', monospace; color: #FF3D00; font-size: 18px; font-weight: 600; }
@@ -43,27 +44,30 @@ st.markdown("""
 # 2. MODEL FUNCTIONS
 # -----------------------------------------------------------------------------
 def black_scholes(S, K, T, r, sigma, option_type="Call"):
-    if T <= 0 or sigma <= 0: return {k: 0.0 for k in ["Price", "Delta", "Gamma", "Vega", "Theta"]}
-    
+    # Avoid division by zero for very small T
+    if T <= 1e-5: 
+        # Intrinsic value at expiration
+        if option_type == "Call": return {"Price": max(0, S-K), "Delta": 1.0 if S>K else 0.0}
+        else: return {"Price": max(0, K-S), "Delta": -1.0 if K>S else 0.0}
+        
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
-    
-    gamma = si.norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    vega = S * np.sqrt(T) * si.norm.pdf(d1) / 100 
     
     if option_type == "Call":
         price = S * si.norm.cdf(d1) - K * np.exp(-r * T) * si.norm.cdf(d2)
         delta = si.norm.cdf(d1)
-        theta = -(S * si.norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) - r * K * np.exp(-r * T) * si.norm.cdf(d2)
     else:
         price = K * np.exp(-r * T) * si.norm.cdf(-d2) - S * si.norm.cdf(-d1)
         delta = -si.norm.cdf(-d1)
-        theta = -(S * si.norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) + r * K * np.exp(-r * T) * si.norm.cdf(-d2)
-
+        
+    gamma = si.norm.pdf(d1) / (S * sigma * np.sqrt(T))
+    vega = S * np.sqrt(T) * si.norm.pdf(d1) / 100 
+    theta = -(S * si.norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) # Simplified Theta
+    
     return {"Price": price, "Delta": delta, "Gamma": gamma, "Vega": vega, "Theta": theta/365}
 
 def crr_binomial_tree(S, K, T, r, sigma, N, option_type="Call"):
-    if T <= 0 or sigma <= 0: return 0.0
+    if T <= 0: return max(0, S-K) if option_type=="Call" else max(0, K-S)
     dt = T / N; u = np.exp(sigma * np.sqrt(dt)); d = 1 / u; p = (np.exp(r * dt) - d) / (u - d)
     asset_prices = np.zeros(N + 1); asset_prices[0] = S * d**N
     for i in range(1, N + 1): asset_prices[i] = asset_prices[i - 1] * (u / d)
@@ -86,8 +90,7 @@ def get_vol_surface_data(ticker_obj, spot, option_type="Call"):
             data = chain.calls if option_type == "Call" else chain.puts
             T = (pd.to_datetime(exp) - pd.Timestamp.now()).days / 365.0
             if T < 0.01: continue
-            mask = (data['impliedVolatility'] > 0.001) & \
-                   (data['strike'] > spot*0.5) & (data['strike'] < spot*1.5)
+            mask = (data['impliedVolatility'] > 0.001) & (data['strike'] > spot*0.5) & (data['strike'] < spot*1.5)
             f = data[mask]
             strikes.extend(f['strike'].tolist())
             tm.extend([T]*len(f))
@@ -96,7 +99,76 @@ def get_vol_surface_data(ticker_obj, spot, option_type="Call"):
     except: return None
 
 # -----------------------------------------------------------------------------
-# 3. LAYOUT & LOGIC
+# 3. BACKTEST ENGINE
+# -----------------------------------------------------------------------------
+def run_hedging_backtest(df, strike, risk_free, vol, opt_type):
+    """
+    Simulates Delta Hedging a Short Option position over the historical dataframe.
+    """
+    history = []
+    
+    # We assume we SOLD the option at t=0
+    # Initial Setup
+    start_date = df.index[0]
+    end_date = df.index[-1]
+    total_days = (end_date - start_date).days
+    
+    # Portfolio State
+    cash = 0
+    shares_held = 0
+    
+    for date, row in df.iterrows():
+        S = row['Close']
+        days_remaining = (end_date - date).days
+        T = days_remaining / 365.0
+        
+        # Calculate BS Theoretical Price & Delta
+        if days_remaining > 0:
+            res = black_scholes(S, strike, T, risk_free, vol, opt_type)
+            theo_price = res['Price']
+            delta = res['Delta']
+        else:
+            # Expiration
+            theo_price = max(0, S - strike) if opt_type == "Call" else max(0, strike - S)
+            delta = 0 # No hedge needed after exp
+            
+        # DELTA HEDGING LOGIC
+        # We are SHORT the option, so we have negative Delta exposure.
+        # To hedge, we need +Delta (Buy Shares).
+        # Target Shares = -1 * (-1 * Delta * 100) = Delta * 100
+        # Wait, if we Short Call (Neg Delta for us), we need Pos Delta (Buy Shares).
+        # Short Call Delta is negative? No, Long Call Delta is positive.
+        # Position Delta = -1 (Short Contract) * CallDelta (~0.5) = -0.5
+        # Hedge needed = +0.5 (Buy 50 shares)
+        
+        target_shares = delta * 100 # Standard 100x multiplier
+        
+        trade_shares = target_shares - shares_held
+        cost = trade_shares * S
+        
+        # Update Portfolio
+        shares_held = target_shares
+        cash -= cost # Spend cash to buy shares
+        
+        # Calculate Portfolio Value (PnL)
+        # Portfolio = Cash + Stock Value - Option Liability
+        stock_val = shares_held * S
+        option_liability = theo_price * 100
+        total_pnl = cash + stock_val - option_liability
+        
+        history.append({
+            "Date": date,
+            "Spot": S,
+            "Delta": delta,
+            "Hedge Shares": shares_held,
+            "PnL": total_pnl,
+            "Option Price": theo_price
+        })
+        
+    return pd.DataFrame(history).set_index("Date")
+
+# -----------------------------------------------------------------------------
+# 4. LAYOUT
 # -----------------------------------------------------------------------------
 st.markdown("""
 <div style="display:flex; align-items:center; margin-bottom:15px;">
@@ -109,7 +181,6 @@ col_left, col_right = st.columns([1, 3])
 
 # --- LEFT COLUMN (INPUTS) ---
 with col_left:
-    # 1. Asset Selection
     input_container = st.container(border=True)
     with input_container:
         st.markdown("**ASSET SELECTION**")
@@ -134,10 +205,9 @@ with col_left:
             hist_vol = np.log(df['Close']/df['Close'].shift(1)).std() * np.sqrt(252)
         except Exception as e: st.error(f"Error: {e}"); st.stop()
 
-    # 2. Parameters
     param_container = st.container(border=True)
     with param_container:
-        st.markdown("**OPTION PARAMETERS (HEDGE INSTRUMENT)**")
+        st.markdown("**OPTION PARAMETERS**")
         col_p1, col_p2 = st.columns(2)
         with col_p1:
             strike = st.number_input("STRIKE", value=float(round(current_price, 0)), step=1.0)
@@ -145,16 +215,17 @@ with col_left:
             sigma = st.number_input("VOLATILITY", value=hist_vol, step=0.01, format="%.3f")
         with col_p2:
             r = st.number_input("RISK FREE", value=0.045, step=0.001, format="%.3f")
-            opt_type = st.selectbox("TYPE", ["Put", "Call"], index=0) # Default to Put for hedging
+            opt_type = st.selectbox("TYPE", ["Call", "Put"])
             steps = st.number_input("STEPS (N)", value=50, min_value=10)
 
     bs_res = black_scholes(current_price, strike, ttm, r, sigma, opt_type)
+    crr_res = crr_binomial_tree(current_price, strike, ttm, r, sigma, steps, opt_type)
     
-    # Simple Metrics
     metric_container = st.container(border=True)
     with metric_container:
         st.markdown(f"**VALUATION ({opt_type.upper()})**")
-        st.metric("PRICE", f"${bs_res['Price']:.4f}")
+        st.metric("BLACK-SCHOLES", f"${bs_res['Price']:.4f}")
+        st.metric("BINOMIAL (CRR)", f"${crr_res:.4f}", delta=f"{(crr_res-bs_res['Price']):.4f}")
         st.markdown("---")
         g1, g2 = st.columns(2)
         g1.metric("DELTA", f"{bs_res['Delta']:.3f}")
@@ -162,109 +233,104 @@ with col_left:
 
 # --- RIGHT COLUMN (ANALYTICS) ---
 with col_right:
-    # 1. Price Chart (Candlestick)
+    # Price Chart
     hist_container = st.container(border=True)
     with hist_container:
         st.markdown(f"**{ticker} PRICE HISTORY ({selected_horizon})**")
-        
-        # Create Candlestick Chart
         fig_price = go.Figure(data=[go.Candlestick(
-            x=df.index,
-            open=df['Open'],
-            high=df['High'],
-            low=df['Low'],
-            close=df['Close'],
-            increasing_line_color='#00C853', # Green for Up
-            decreasing_line_color='#FF3D00', # Red for Down
-            name='OHLC'
+            x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+            increasing_line_color='#00C853', decreasing_line_color='#FF3D00', name='OHLC'
         )])
-        
-        # Update layout for a clean "TradingView" look
-        fig_price.update_layout(
-            height=350,  # Slightly taller to see details
-            margin=dict(t=10, b=10, l=10, r=10),
-            paper_bgcolor="#1E2329",
-            plot_bgcolor="#1E2329",
-            xaxis=dict(
-                showgrid=True, 
-                gridcolor="#2C333D",
-                rangeslider=dict(visible=False) # Hide the bottom slider to save space
-            ),
-            yaxis=dict(
-                showgrid=True, 
-                gridcolor="#2C333D"
-            ),
-            showlegend=False
-        )
+        fig_price.update_layout(height=250, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor="#1E2329", plot_bgcolor="#1E2329",
+                                xaxis=dict(showgrid=True, gridcolor="#2C333D", rangeslider=dict(visible=False)),
+                                yaxis=dict(showgrid=True, gridcolor="#2C333D"), showlegend=False)
         st.plotly_chart(fig_price, use_container_width=True)
 
-    # NEW TABS (Added Hedging Lab)
-    tab_hedge, tab_conv, tab_vol, tab_chain = st.tabs(["HEDGING LAB", "CONVERGENCE", "VOLATILITY SURFACE", "OPTION DESK"])
+    # --- TABS ---
+    tab_hedge, tab_robust, tab_conv, tab_vol, tab_chain = st.tabs(["HEDGING LAB", "ROBUSTNESS TEST", "CONVERGENCE", "VOL SURFACE", "OPTION DESK"])
     
-    # --- 1. HEDGING LAB (UPDATED LOGIC) ---
+    # 1. HEDGING LAB (Interactive)
     with tab_hedge:
         hedge_container = st.container(border=True)
         with hedge_container:
             c_h1, c_h2 = st.columns([1, 2])
-            
             with c_h1:
                 st.markdown("**PORTFOLIO CONFIG**")
-                # User inputs their STOCK position
-                shares = st.number_input("SHARES HELD", value=100, step=10, help="How many shares of the index ETF do you own?")
-                
+                shares = st.number_input("SHARES HELD", value=100, step=10)
                 st.markdown("<br>**STRESS TEST MODE**", unsafe_allow_html=True)
                 stress_on = st.toggle("SIMULATE MARKET CRASH", value=False)
-                
-                # Apply Stress
                 if stress_on:
-                    sim_price = current_price * 0.85 # -15% Spot
-                    sim_vol = sigma + 0.20           # +20% Vol
-                    # Recalculate Option stats under stress
+                    sim_price = current_price * 0.85; sim_vol = sigma + 0.20
                     sim_bs = black_scholes(sim_price, strike, ttm, r, sim_vol, opt_type)
                     st.caption(f"📉 Spot: ${sim_price:.2f} | 📈 Vol: {sim_vol:.2%}")
-                else:
-                    sim_bs = bs_res
-                    sim_price = current_price
+                else: sim_bs = bs_res; sim_price = current_price
 
             with c_h2:
-                # 1. Calculate Portfolio Delta (Stock Delta is 1.0 per share)
                 port_delta = shares * 1.0
-                
-                # 2. Calculate Option Delta (Per Contract = Delta * 100)
-                # Note: Put Delta is negative. Call Delta is positive.
                 opt_delta_per_contract = sim_bs['Delta'] * 100
-                
-                # 3. Calculate Hedge Required
-                # Goal: Net Delta = 0
-                # Formula: Shares + (Contracts * ContractDelta) = 0
-                # Contracts = -Shares / ContractDelta
-                
-                if abs(opt_delta_per_contract) > 0.001:
-                    hedge_contracts_req = -port_delta / opt_delta_per_contract
-                else:
-                    hedge_contracts_req = 0
-
-                # Formatting for UI
+                if abs(opt_delta_per_contract) > 0.001: hedge_contracts_req = -port_delta / opt_delta_per_contract
+                else: hedge_contracts_req = 0
                 rec_action = "BUY" if hedge_contracts_req > 0 else "SELL"
-                abs_contracts = abs(hedge_contracts_req)
                 color_class = "hedge-warn" if stress_on else "hedge-rec"
                 
                 st.markdown('<div class="hedge-box">', unsafe_allow_html=True)
-                st.markdown(f"**PORTFOLIO EXPOSURE (SHARES)**: <span style='color:white'>${(shares * sim_price):,.0f}</span>", unsafe_allow_html=True)
-                st.markdown(f"**OPTION DELTA (x100)**: <span style='color:white'>{opt_delta_per_contract:.2f}</span>", unsafe_allow_html=True)
+                st.markdown(f"**PORTFOLIO EXPOSURE**: <span style='color:white'>${(shares * sim_price):,.0f}</span>", unsafe_allow_html=True)
                 st.markdown("---")
                 st.markdown("##### 🛡️ HEDGE RECOMMENDATION")
-                st.markdown(f'<div class="{color_class}">{rec_action} {abs_contracts:.1f} {opt_type.upper()} CONTRACTS</div>', unsafe_allow_html=True)
-                st.caption(f"Traded against Strike ${strike} {opt_type}")
+                st.markdown(f'<div class="{color_class}">{rec_action} {abs(hedge_contracts_req):.1f} CONTRACTS</div>', unsafe_allow_html=True)
                 st.markdown('</div>', unsafe_allow_html=True)
-                
-                if stress_on and opt_type == "Put":
-                    st.info("""
-                    **💡 INSIGHT:** Notice that in a crash, Put Delta becomes more negative (moves toward -100). 
-                    Your options become "stronger" hedges. If you hedge fully now, you might be **over-hedged** (net short) if the market crashes.
-                    """)
 
-    # --- 2. CONVERGENCE ---
+    # 2. ROBUSTNESS TEST (New!)
+    with tab_robust:
+        st.markdown("""
+        <div style="padding:10px; background:#15191F; border:1px solid #2C333D; margin-bottom:10px;">
+            <span style="color:#1C97F3; font-weight:700;">BACKTESTING CHALLENGE:</span> 
+            We simulate selling this option at the start of the chart history and Delta Hedging it daily.
+            <br><span style="color:#90A4AE; font-size:12px;">Theory says P&L should be zero. Reality (jumps/gaps) causes leakage.</span>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("RUN HEDGING SIMULATION"):
+            with st.spinner("Simulating Daily Rebalancing..."):
+                # Run Backtest
+                bt_df = run_hedging_backtest(df, strike, r, sigma, opt_type)
+                
+                # Plot Results
+                fig_bt = make_subplots(specs=[[{"secondary_y": True}]])
+                
+                # Area 1: Hedging P&L (The Error)
+                fig_bt.add_trace(go.Scatter(
+                    x=bt_df.index, y=bt_df['PnL'], 
+                    mode='lines', name='Cumulative P&L (Hedging Error)',
+                    line=dict(color='#FF3D00', width=2),
+                    fill='tozeroy'
+                ), secondary_y=False)
+                
+                # Area 2: Stock Price (Context)
+                fig_bt.add_trace(go.Scatter(
+                    x=bt_df.index, y=bt_df['Spot'],
+                    mode='lines', name='Stock Price',
+                    line=dict(color='#90A4AE', width=1, dash='dot')
+                ), secondary_y=True)
+                
+                fig_bt.update_layout(
+                    height=350, margin=dict(t=30, b=10, l=10, r=10),
+                    paper_bgcolor="#1E2329", plot_bgcolor="#1E2329",
+                    title="ROBUSTNESS TEST: HEDGING ERROR ACCUMULATION",
+                    xaxis=dict(showgrid=True, gridcolor="#2C333D"),
+                    yaxis=dict(showgrid=True, gridcolor="#2C333D", title="P&L ($)"),
+                    yaxis2=dict(showgrid=False, title="Spot Price"),
+                    showlegend=True, legend=dict(orientation="h", y=1.1)
+                )
+                st.plotly_chart(fig_bt, use_container_width=True)
+                
+                # Final Stats
+                final_pnl = bt_df['PnL'].iloc[-1]
+                st.metric("TOTAL HEDGING SLIPPAGE", f"${final_pnl:,.2f}", 
+                          delta="Gaussian Assumption Failed" if abs(final_pnl) > 50 else "Model Held Up",
+                          delta_color="inverse")
+
+    # 3. CONVERGENCE
     with tab_conv:
         conv_container = st.container(border=True)
         with conv_container:
@@ -278,7 +344,7 @@ with col_right:
                                    xaxis=dict(showgrid=True, gridcolor="#2C333D"), yaxis=dict(showgrid=True, gridcolor="#2C333D"))
             st.plotly_chart(fig_conv, use_container_width=True)
 
-    # --- 3. VOL SURFACE ---
+    # 4. VOL SURFACE
     with tab_vol:
         vol_container = st.container(border=True)
         with vol_container:
@@ -299,7 +365,7 @@ with col_right:
                     else: st.warning("Not enough data.")
             else: st.info(f"Click to load {opt_type} Volatility Surface")
 
-    # --- 4. OPTION DESK ---
+    # 5. OPTION DESK
     with tab_chain:
         chain_container = st.container(border=True)
         with chain_container:
