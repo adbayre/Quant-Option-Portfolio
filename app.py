@@ -1665,10 +1665,10 @@ st.markdown("<br><br>", unsafe_allow_html=True)
 st.markdown("""
 <div style="text-align: center; padding: 20px; border-top: 1px solid #1e293b;">
     <p style="color: #64748b; font-size: 12px; margin: 0;">
-        CRR Pricing Platform • ESILV - Projet d'Innovation Industrielle • 2025
+        CRR Pricing Platform • ESILV - Projet d'Innovation Industrielle • 2025 - 2026
     </p>
     <p style="color: #475569; font-size: 11px; margin: 8px 0 0 0;">
-        Built with Streamlit • Mathematical models for educational purposes only
+        Mathematical models for educational purposes only
     </p>
 </div>
 """, unsafe_allow_html=True)
