@@ -641,6 +641,80 @@ def simulate_hedging_strategy(S0, K, T, r, sigma, n_steps, n_paths, use_bs_delta
     }
 
 
+
+# =============================================================================
+# VANNA-VOLGA HEDGING SIMULATION
+# =============================================================================
+
+def simulate_hedging_strategy_vv(S0, K, T, r, sigma_atm, 
+                                 n_steps, n_paths, option_type="Call"):
+
+    dt = T / n_steps
+    paths = simulate_gbm_paths(S0, r, sigma_atm, T, n_steps, n_paths)
+
+    initial_option = black_scholes_full_greeks(
+        S0, K, T, r, sigma_atm, option_type
+    )
+
+    initial_price = initial_option["Price"]
+
+    portfolio_values = np.zeros((n_paths, n_steps + 1))
+    deltas = np.zeros((n_paths, n_steps + 1))
+    cash_accounts = np.zeros((n_paths, n_steps + 1))
+
+    for i in range(n_paths):
+
+        S = paths[i, 0]
+
+        sigma_market = synthetic_smile_vol(S0, K, sigma_atm)
+
+        bs_greeks = black_scholes_full_greeks(
+            S, K, T, r, sigma_market, option_type
+        )
+
+        delta = bs_greeks["Delta"]
+
+        deltas[i, 0] = delta
+        cash_accounts[i, 0] = initial_price - delta * S
+        portfolio_values[i, 0] = delta * S + cash_accounts[i, 0]
+
+    for t in range(1, n_steps + 1):
+
+        ttm = T - t * dt
+
+        for i in range(n_paths):
+
+            S = paths[i, t]
+
+            if ttm > 1e-6:
+
+                sigma_market = synthetic_smile_vol(S0, K, sigma_atm)
+
+                greeks = black_scholes_full_greeks(
+                    S, K, ttm, r, sigma_market, option_type
+                )
+
+                new_delta = greeks["Delta"]
+
+            else:
+                new_delta = 1.0 if S > K else 0.0
+
+            old_delta = deltas[i, t - 1]
+
+            cash_accounts[i, t] = cash_accounts[i, t - 1] * np.exp(r * dt) \
+                                  - (new_delta - old_delta) * S
+
+            deltas[i, t] = new_delta
+            portfolio_values[i, t] = new_delta * S + cash_accounts[i, t]
+
+    final_payoffs = np.maximum(paths[:, -1] - K, 0)
+    hedging_errors = portfolio_values[:, -1] - final_payoffs
+
+    return hedging_errors
+
+####
+
+
 def calculate_stress_scenarios(S, K, T, r, sigma, option_type):
     """Calculate stress test scenarios."""
     scenarios = [
@@ -1846,6 +1920,45 @@ with tab5:
         hedge_fig = create_hedging_figure(results, min(100, n_sim_paths))
         st.plotly_chart(hedge_fig, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
+
+
+    st.markdown("### Hedging Comparison: BS vs Vanna-Volga")
+
+    vv_errors = simulate_hedging_strategy_vv(
+        S, K, T, r, sigma,
+        n_sim_steps, n_sim_paths,
+        option_type
+    )
+
+    bs_errors = results['hedging_errors']
+
+    fig_compare = go.Figure()
+
+    fig_compare.add_trace(go.Histogram(
+        x=bs_errors,
+        name="Black-Scholes Hedge",
+        opacity=0.6
+    ))
+
+    fig_compare.add_trace(go.Histogram(
+        x=vv_errors,
+        name="Vanna-Volga Hedge",
+        opacity=0.6
+    ))
+
+    fig_compare.update_layout(
+        barmode='overlay',
+        title="Hedging Error Distribution Comparison",
+        xaxis_title="Hedging Error",
+        yaxis_title="Frequency",
+        height=450
+    )
+
+    st.plotly_chart(fig_compare, use_container_width=True)
+
+    st.write("BS Mean Error:", np.mean(bs_errors))
+    st.write("VV Mean Error:", np.mean(vv_errors))
+
 
 
 # =============================================================================
