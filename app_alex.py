@@ -1159,6 +1159,186 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
 
+
+
+# =============================================================================
+# VANNA-VOLGA SMILE CORRECTION MODULE
+# =============================================================================
+
+def black_scholes_full_greeks(S, K, T, r, sigma, option_type="Call"):
+    """
+    Black-Scholes with extended Greeks (Vanna & Volga)
+    """
+    if T <= 0 or sigma <= 0:
+        return None
+
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+
+    pdf_d1 = si.norm.pdf(d1)
+    cdf_d1 = si.norm.cdf(d1)
+    cdf_d2 = si.norm.cdf(d2)
+
+    if option_type == "Call":
+        price = S * cdf_d1 - K * np.exp(-r * T) * cdf_d2
+        delta = cdf_d1
+    else:
+        price = K * np.exp(-r * T) * si.norm.cdf(-d2) - S * si.norm.cdf(-d1)
+        delta = -si.norm.cdf(-d1)
+
+    gamma = pdf_d1 / (S * sigma * np.sqrt(T))
+    vega = S * np.sqrt(T) * pdf_d1
+
+    # --- Vanna & Volga ---
+    vanna = pdf_d1 * (np.sqrt(T) - d1 / sigma)
+    volga = vega * d1 * d2 / sigma
+
+    return {
+        "Price": price,
+        "Delta": delta,
+        "Gamma": gamma,
+        "Vega": vega,
+        "Vanna": vanna,
+        "Volga": volga
+    }
+
+
+def synthetic_smile_vol(S, K, sigma_atm):
+    """
+    Simple synthetic smile (for demo if no real surface loaded)
+    """
+    moneyness = np.log(K / S)
+    smile = 0.25 * moneyness**2
+    skew = -0.35 * moneyness
+    return max(0.05, sigma_atm + smile + skew)
+
+
+def interpolate_market_vol(strikes, maturities, ivs, K_target, T_target):
+    """
+    Interpolate IV from real surface data
+    """
+    try:
+        points = np.array(list(zip(strikes, maturities)))
+        values = np.array(ivs)
+        return griddata(points, values, (K_target, T_target), method='linear')
+    except:
+        return None
+
+
+def vanna_volga_price(S, K, T, r, sigma_atm, sigma_market, option_type="Call"):
+    """
+    Second-order Vanna-Volga smile correction
+    """
+    base = black_scholes_full_greeks(S, K, T, r, sigma_atm, option_type)
+    if base is None:
+        return 0
+
+    delta_sigma = sigma_market - sigma_atm
+
+    vega = base["Vega"]
+    vanna = base["Vanna"]
+    volga = base["Volga"]
+
+    if abs(vega) < 1e-8:
+        return base["Price"]
+
+    correction = (vanna / vega) * delta_sigma \
+                 + 0.5 * (volga / vega) * delta_sigma**2
+
+    corrected_price = base["Price"] + correction
+
+    return corrected_price
+
+
+# =============================================================================
+# STREAMLIT VISUALIZATION - VANNA VOLGA TAB
+# =============================================================================
+
+def vanna_volga_visualization(S, T, r, sigma_atm, option_type,
+                               strikes=None, maturities=None, ivs=None):
+
+    st.markdown("## Vanna-Volga Smile Correction")
+
+    strike_range = np.linspace(S * 0.7, S * 1.3, 40)
+
+    bs_prices = []
+    vv_prices = []
+    used_vols = []
+
+    for K_val in strike_range:
+
+        # Get market vol
+        if strikes is not None and maturities is not None and ivs is not None:
+            sigma_market = interpolate_market_vol(
+                strikes, maturities, ivs, K_val, T
+            )
+            if sigma_market is None:
+                sigma_market = synthetic_smile_vol(S, K_val, sigma_atm)
+        else:
+            sigma_market = synthetic_smile_vol(S, K_val, sigma_atm)
+
+        used_vols.append(sigma_market)
+
+        # Prices
+        bs_price = black_scholes_full_greeks(
+            S, K_val, T, r, sigma_atm, option_type
+        )["Price"]
+
+        vv_price = vanna_volga_price(
+            S, K_val, T, r, sigma_atm, sigma_market, option_type
+        )
+
+        bs_prices.append(bs_price)
+        vv_prices.append(vv_price)
+
+    # --- Plot price comparison ---
+    fig1 = go.Figure()
+
+    fig1.add_trace(go.Scatter(
+        x=strike_range,
+        y=bs_prices,
+        mode='lines',
+        name='Black-Scholes',
+        line=dict(width=2)
+    ))
+
+    fig1.add_trace(go.Scatter(
+        x=strike_range,
+        y=vv_prices,
+        mode='lines',
+        name='Vanna-Volga',
+        line=dict(width=2)
+    ))
+
+    fig1.update_layout(
+        title="BS vs Vanna-Volga Price Across Strikes",
+        xaxis_title="Strike",
+        yaxis_title="Option Price",
+        height=450
+    )
+
+    st.plotly_chart(fig1, use_container_width=True)
+
+    # --- Plot smile used ---
+    fig2 = go.Figure()
+
+    fig2.add_trace(go.Scatter(
+        x=strike_range,
+        y=np.array(used_vols) * 100,
+        mode='lines',
+        name='Implied Volatility (%)'
+    ))
+
+    fig2.update_layout(
+        title="Implied Volatility Smile Used",
+        xaxis_title="Strike",
+        yaxis_title="Volatility (%)",
+        height=400
+    )
+
+    st.plotly_chart(fig2, use_container_width=True)
+
+
 # =============================================================================
 # 8. MAIN CONTENT
 # =============================================================================
@@ -1599,6 +1779,13 @@ with tab4:
         **Patterns:** Contango (IV increases with maturity), Backwardation (IV decreases), Flat.
         """)
         st.markdown('</div>', unsafe_allow_html=True)
+    
+
+    st.markdown("---")
+    vanna_volga_visualization(
+        S, T, r, sigma, option_type
+    )
+
 
 
 # =============================================================================
@@ -1813,6 +2000,9 @@ with tab7:
         st.markdown('</div>', unsafe_allow_html=True)
 
 
+
+
+
 # =============================================================================
 # FOOTER
 # =============================================================================
@@ -1827,3 +2017,5 @@ st.markdown(f"""
     </p>
 </div>
 """, unsafe_allow_html=True)
+
+
